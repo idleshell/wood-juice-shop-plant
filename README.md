@@ -44,6 +44,7 @@ For a detailed introduction, full list of features and architecture overview ple
     - [Vagrant](#vagrant)
 - [Demo](#demo)
 - [Documentation](#documentation)
+    - [Vuln Remediator (this fork)](REMEDIATOR.md)
     - [Node.js version compatibility](#nodejs-version-compatibility)
     - [Troubleshooting](#troubleshooting)
     - [Official companion guide](#official-companion-guide)
@@ -129,6 +130,8 @@ Feel free to have a look at the latest version of OWASP Juice Shop:
 > guaranteed uptime! Guaranteed stern looks if you break it!
 
 ## Documentation
+
+Fork notes for Wood's Vuln Remediator: [REMEDIATOR.md](REMEDIATOR.md).
 
 ### Node.js version compatibility
 
