@@ -1,0 +1,146 @@
+name: "Remediator validate"
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: "remediator-validate-${{ github.event.pull_request.number || github.ref }}"
+  cancel-in-progress: true
+env:
+  NODE_DEFAULT_VERSION: 24
+  NODE_OPTIONS: "--max_old_space_size=4096"
+  SEMGREP_VERSION: '1.176.0'
+  # Gate location for FINDING-PATH-B-001 (SQL injection / CWE-89 at the Login Admin lookup).
+  # Scoped to this one file on purpose: the plant keeps other intentional SQLi vulns (e.g.
+  # routes/search.ts) that the remediating PR does not touch, so a repo-wide gate could never
+  # go green and the red -> green surface would be lost.
+  GATE_TARGET: routes/login.ts
+  PINNED_RULE_IDS: 'express-sequelize-injection|sequelize-raw-query|tainted-sql-string'
+jobs:
+  semgrep:
+    name: "Validate #1 - Semgrep (SQL injection / CWE-89)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: "Check out Git repository"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+      - name: "Install Semgrep"
+        run: |
+          if ! pipx install "semgrep==$SEMGREP_VERSION"; then
+            pip install --user "semgrep==$SEMGREP_VERSION" || pip install --user --break-system-packages "semgrep==$SEMGREP_VERSION"
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.local/bin:$PATH"
+          fi
+          semgrep --version
+      - name: "Resolve pinned CWE-89 rules"
+        id: rules
+        run: |
+          registry_args="--config r/javascript.sequelize.security.audit.sequelize-injection-express.express-sequelize-injection --config r/javascript.sequelize.security.audit.sequelize-raw-query --config r/javascript.express.security.injection.tainted-sql-string"
+          # Probe the registry against a throwaway target. Semgrep exits 0/1 once the rules are
+          # resolved and 2 when they are not, and the semgrep.dev download is the flaky step.
+          probe="$RUNNER_TEMP/semgrep-probe"
+          mkdir -p "$probe"
+          echo 'const probe = 1' > "$probe/probe.js"
+          rc=0
+          # shellcheck disable=SC2086 # the config args are meant to be split into separate flags
+          semgrep scan --metrics=off --disable-version-check --quiet $registry_args "$probe" >/dev/null 2>&1 || rc=$?
+          if [ "$rc" -lt 2 ]; then
+            echo "Resolved the pinned rules from the Semgrep registry."
+            echo "source=Semgrep registry" >> "$GITHUB_OUTPUT"
+            echo "SEMGREP_CONFIG_ARGS=$registry_args" >> "$GITHUB_ENV"
+          else
+            echo "Registry download failed (exit $rc); cloning semgrep/semgrep-rules instead."
+            rules="$RUNNER_TEMP/semgrep-rules"
+            git clone --depth 1 https://github.com/semgrep/semgrep-rules.git "$rules"
+            echo "source=semgrep/semgrep-rules clone" >> "$GITHUB_OUTPUT"
+            echo "SEMGREP_CONFIG_ARGS=--config $rules/javascript/sequelize/security/audit/sequelize-injection-express.yaml --config $rules/javascript/sequelize/security/audit/sequelize-raw-query.yaml --config $rules/javascript/express/security/injection/tainted-sql-string.yaml" >> "$GITHUB_ENV"
+          fi
+      - name: "Scan gate location for the pinned CWE-89 class"
+        run: |
+          mkdir -p semgrep-out
+          rc=0
+          # shellcheck disable=SC2086 # the config args are meant to be split into separate flags
+          semgrep scan --metrics=off --disable-version-check --quiet --json \
+            --output semgrep-out/gate.json $SEMGREP_CONFIG_ARGS "$GATE_TARGET" || rc=$?
+          if [ "$rc" -ge 2 ] || ! jq -e . semgrep-out/gate.json >/dev/null 2>&1; then
+            echo "::error::Semgrep could not scan $GATE_TARGET (exit $rc); treating Validate #1 as failed."
+            exit 1
+          fi
+          matches=$(jq --arg re "$PINNED_RULE_IDS" '[.results[] | select(.check_id | test($re))] | length' semgrep-out/gate.json)
+          {
+            echo "### Validate #1 - Semgrep (SQL injection / CWE-89)"
+            echo
+            echo "- Engine: \`$(semgrep --version 2>/dev/null | tail -1)\`"
+            echo "- Rule source: ${{ steps.rules.outputs.source }}"
+            echo
+            echo "| Gate location | Pinned CWE-89 matches |"
+            echo "| --- | --- |"
+            echo "| \`$GATE_TARGET\` | $matches |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$matches" -gt 0 ]; then
+            jq -r --arg re "$PINNED_RULE_IDS" \
+              '.results[] | select(.check_id | test($re)) | "\(.path):\(.start.line) [\(.extra.severity)] \(.check_id)"' \
+              semgrep-out/gate.json
+            {
+              echo
+              echo "The pinned SQL injection class still matches at \`$GATE_TARGET\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error file=$GATE_TARGET::Pinned SQL injection (CWE-89) class still matches at $GATE_TARGET ($matches finding(s))."
+            exit 1
+          fi
+          {
+            echo
+            echo "The pinned SQL injection class no longer matches at \`$GATE_TARGET\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: "Report remaining CWE-89 findings across routes (informational)"
+        if: always()
+        run: |
+          if [ -z "${SEMGREP_CONFIG_ARGS:-}" ]; then
+            echo "Rules were never resolved; skipping the informational scan."
+            exit 0
+          fi
+          mkdir -p semgrep-out
+          # shellcheck disable=SC2086 # the config args are meant to be split into separate flags
+          semgrep scan --metrics=off --disable-version-check --quiet --json \
+            --output semgrep-out/routes.json $SEMGREP_CONFIG_ARGS routes/ || true
+          if jq -e . semgrep-out/routes.json >/dev/null 2>&1; then
+            {
+              echo
+              echo "#### Other intentional SQLi plants in \`routes/\` (reported, not gated)"
+              echo
+              jq -r '.results | group_by(.path + ":" + (.start.line | tostring)) | .[] | "- `\(.[0].path):\(.[0].start.line)` - \(length) finding(s)"' semgrep-out/routes.json
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: "Upload Semgrep reports"
+        if: always()
+        uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b #v4.5.0
+        with:
+          name: remediator-semgrep-reports
+          path: semgrep-out/
+          if-no-files-found: warn
+  npm-test:
+    name: "Validate #2 - npm test (frontend, server, api)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: "Check out Git repository"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+      - name: "Use Node.js"
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af #v4.1.0
+        with:
+          node-version: ${{ env.NODE_DEFAULT_VERSION }}
+      - name: "Install application"
+        run: npm install
+      - name: "Execute frontend unit tests"
+        run: npm run test:frontend
+      - name: "Execute server unit tests"
+        run: npm run test:server
+      - name: "Execute integration tests"
+        env:
+          NODE_ENV: test
+          ALCHEMY_API_KEY: ${{ secrets.ALCHEMY_API_KEY }}
+        run: npm run test:api

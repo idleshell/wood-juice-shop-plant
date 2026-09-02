@@ -22,6 +22,7 @@ cache/
 coverage/
 dist/
 logs/
+semgrep-out/
 vagrant/.vagrant/
 *.orig
 *.out

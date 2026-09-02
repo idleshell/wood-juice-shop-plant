@@ -25,6 +25,10 @@ Harness and docs live in **`internalsphere/wood-vuln-remediation`**. That repo d
 
 The advanced UI clip is **jumpable** and is **never a gate**.
 
+## Checks surface (Validate #1 / #2)
+
+Step 4 is painted by [`.github/workflows/remediator-validate.yml`](.github/workflows/remediator-validate.yml) ("Remediator validate"), which runs on every pull request and on pushes to `master`. Its two jobs are the red → green surface: **Validate #1** re-scans with Semgrep using the pinned CWE-89 rules and fails while that class still matches at the Finding location (`routes/login.ts`), and **Validate #2** runs the plant's existing `test:frontend` / `test:server` / `test:api` scripts. The Semgrep gate is deliberately scoped to the Finding location rather than the whole repo, because the plant keeps other intentional SQL injection vulns (for example `routes/search.ts`) that a remediating PR is not supposed to touch — a repo-wide gate would stay red forever and there would be no green to land on. Upstream `ci.yml` is left alone; it gates most of its matrix on `github.repository == 'juice-shop/juice-shop'`, so it cannot be relied on for Checks in this fork. Because this is a fork, GitHub Actions must be **enabled** in repository settings or no Checks appear at all.
+
 ## Scope
 
 Keep **intentional demo vulns** only. Do **not**:
