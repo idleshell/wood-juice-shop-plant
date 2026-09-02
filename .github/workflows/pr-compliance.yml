@@ -10,6 +10,10 @@ permissions:
 
 jobs:
   check-compliance:
+    # Upstream-only anti-spam guard. In the Path B plant fork every remediation PR targets this
+    # fork's default branch (master) and describes its Semgrep re-scan, which the checks below
+    # score as spam and auto-close, so leaving this ungated would shut every Remediator PR.
+    if: github.repository == 'juice-shop/juice-shop'
     runs-on: ubuntu-latest
     steps:
       - name: "Initialize PR Information"
