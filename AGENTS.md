@@ -193,6 +193,14 @@ npm run rsn
 - **IMPORTANT**: Utilize the [verify-rsn-fix skill](./.ai/skills/verify-rsn-fix/SKILL.md).
 - When refactoring source code that is part of a challenge snippet, manually apply the same changes to the corresponding codefix files in `data/static/codefixes/` to maintain consistency.
 
+## Cloud Agent environment
+
+The default VM `node` is 22.14 at `/exec-daemon/node` (npm 10). That npm crashes while installing `frontend/` (`Cannot read properties of null (reading 'edgesOut')`). Use Node.js 24.21.0, the same major as `NODE_DEFAULT_VERSION` in CI. The environment install unpacks it to `/usr/local/lib/nodejs/node-v24.21.0-linux-x64` and links `node`, `npm`, and `npx` into `/usr/local/cargo/bin` so they come before `/exec-daemon` on `PATH`.
+
+`.npmrc` sets `package-lock=false`, so install with `npm install`, not `npm ci`. Postinstall builds the Angular app, then the SBOM script reads `frontend/dist/frontend/stats.json`. The Angular 22 application builder writes `browser-stats.json` instead, and postinstall stops before `tsc`. Finish a failed install by linking `stats.json` to `browser-stats.json`, running `npm run sbom` in `frontend/`, and running `npm run build:server`.
+
+`npm start` serves the shop on port 3000. Chatbot challenges need an LLM at `http://localhost:11434/v1`. Web3 challenges need `ALCHEMY_API_KEY` and `https://www.alchemy.com/`. The shop runs without either. A few API tests fetch Pastebin and Disqus fixtures; those hosts are not on the default egress allowlist.
+
 ## Getting Help
 
 - **Authoritative Guide**: [AGENTS.md](./AGENTS.md)
